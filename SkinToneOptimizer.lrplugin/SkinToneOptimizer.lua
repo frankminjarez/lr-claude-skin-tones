@@ -98,49 +98,64 @@ local function getJpegDimensions(data)
     return nil, nil
 end
 
--- Anthropic's hard limit on any single image dimension
-local MAX_IMAGE_DIM = 7999
+-- Anthropic hard limits
+local MAX_IMAGE_DIM   = 7999
+local MAX_IMAGE_BYTES = 9 * 1024 * 1024   -- 9 MB — gives headroom under the 10 MB API cap
 
 -- ─────────────────────────────────────────────────────────
 -- Async thumbnail retrieval
+--
+-- catalog:setSelectedPhotos() asserts when called from inside an async task
+-- that has an active progress scope (Lightroom SDK context restriction).
+-- When the preview is stale, we retry briefly then surface a clear instruction
+-- asking the user to manually click away and back — that is the reliable fix.
 -- ─────────────────────────────────────────────────────────
 local function getPhotoThumbnail(photo, size)
-    local jpegData   = nil
-    local thumbError = nil
-    local done       = false
+    local MAX_ATTEMPTS = 3
 
-    photo:requestJpegThumbnail(size, size, function(data, errorMsg)
-        if data and #data > 0 then
-            jpegData = data
-        else
-            thumbError = errorMsg or 'No preview available'
-        end
-        done = true
-    end)
+    for attempt = 1, MAX_ATTEMPTS do
+        local jpegData, thumbError, done = nil, nil, false
 
-    local deadline = os.time() + 30
-    while not done do
-        LrTasks.yield()
-        if os.time() > deadline then
-            return nil, 'Timed out waiting for preview (build previews first)'
+        photo:requestJpegThumbnail(size, size, function(data, errorMsg)
+            if data and #data > 0 then jpegData = data
+            else thumbError = errorMsg or 'unknown' end
+            done = true
+        end)
+
+        local deadline = os.time() + 30
+        while not done do
+            LrTasks.yield()
+            if os.time() > deadline then
+                return nil, 'Timed out waiting for preview. Go to Library \226\150\184 Previews \226\150\184 Build Standard-Sized Previews and retry.'
+            end
         end
+
+        if jpegData then
+            -- Size guard — Anthropic rejects images over 10 MB
+            if #jpegData > MAX_IMAGE_BYTES then
+                return nil, string.format(
+                    'Preview is too large to send (%.1f MB — limit is 9 MB). ' ..
+                    'Go to Library \226\150\184 Previews \226\150\184 Build Standard-Sized Previews and retry.',
+                    #jpegData / (1024 * 1024))
+            end
+            -- Dimension guard
+            local w, h = getJpegDimensions(jpegData)
+            if w and h and (w > MAX_IMAGE_DIM or h > MAX_IMAGE_DIM) then
+                return nil, string.format(
+                    'Preview is too large (%d\195\151%d px — Anthropic limit is 8000 px). ' ..
+                    'Go to Library \226\150\184 Previews \226\150\184 Build Standard-Sized Previews, ' ..
+                    'then retry. Or reduce the Preview Size in Skin Tone Optimizer Settings.',
+                    w, h)
+            end
+            return jpegData, nil
+        end
+
+        LrTasks.yield()  -- brief yield before next attempt
     end
 
-    if jpegData then
-        -- Verify the returned preview fits within Anthropic's 8000 px limit.
-        -- Lightroom sometimes returns a full-res cached preview regardless of
-        -- the requested size.
-        local w, h = getJpegDimensions(jpegData)
-        if w and h and (w > MAX_IMAGE_DIM or h > MAX_IMAGE_DIM) then
-            return nil, string.format(
-                'Preview is too large (%d\195\151%d px — Anthropic limit is 8000 px). ' ..
-                'Go to Library \226\150\184 Previews \226\150\184 Build Standard-Sized Previews, ' ..
-                'then retry. Or reduce the Preview Size in Skin Tone Optimizer Settings.',
-                w, h)
-        end
-    end
-
-    return jpegData, thumbError
+    return nil, 'Preview appears stale. Click a different photo and then ' ..
+        're-select this one to reset the preview, then run Optimise again. ' ..
+        'Or go to Library \226\150\184 Previews \226\150\184 Build Standard-Sized Previews.'
 end
 
 -- ─────────────────────────────────────────────────────────
