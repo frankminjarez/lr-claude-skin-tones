@@ -2,6 +2,8 @@
 
 Automatically adjusts **White Balance** and the **HSL Color Mixer** on selected photos to produce natural, flattering skin tones, using Anthropic's Claude vision models. All other develop settings are left untouched.
 
+[![Watch the video](https://img.youtube.com/vi/Uw059iFXwz4/0.jpg)](https://www.youtube.com/watch?v=Uw059iFXwz4)
+
 ---
 
 ## How it works
